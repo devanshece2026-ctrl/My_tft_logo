@@ -1,6 +1,5 @@
 import streamlit as st
 from PIL import Image
-from intelhex import IntelHex
 import io
 
 st.set_page_config(page_title="IconEdit Pro", page_icon="⚡", layout="centered")
@@ -29,19 +28,51 @@ if uploaded_file is not None:
         for y in range(FIXED_HEIGHT):
             for x in range(FIXED_WIDTH):
                 r, g, b = img.getpixel((x, y))
+                # RGB888 to RGB565 conversion
                 rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
                 raw_binary_data.append((rgb565 >> 8) & 0xFF)
                 raw_binary_data.append(rgb565 & 0xFF)
         
         total_bytes = len(raw_binary_data)
         
-        ih = IntelHex()
-        ih.frombytes(raw_binary_data, offset=FLASH_START_ADDRESS)
+        # --- Intel HEX Format Manual Generation (No intelhex library needed) ---
+        hex_lines = []
+        current_address = FLASH_START_ADDRESS
         
-        hex_buffer = io.StringIO()
-        ih.write_hex_file(hex_buffer)
-        hex_string = hex_buffer.getvalue()
+        # 16 बाइट्स के टुकड़ों में बाइनरी डेटा को Intel HEX रिकॉर्ड में बदलना
+        for i in range(0, total_bytes, 16):
+            chunk = raw_binary_data[i:i+16]
+            byte_count = len(chunk)
+            
+            # अगर एड्रेस 16-bit लिमिट (64KB) से ऊपर है, तो Extended Linear Address Record (04) जोड़ें
+            if i == 0 or (current_address & 0xFFFF) == 0:
+                high_word = (current_address >> 16) & 0xFFFF
+                ext_rec = f":02000004{high_word:04X}"
+                # Checksum कैलकुलेशन
+                ext_cs = (0x02 + 0x00 + 0x00 + 0x04 + ((high_word >> 8) & 0xFF) + (high_word & 0xFF)) & 0xFF
+                ext_cs = (-ext_cs) & 0xFF
+                hex_lines.append(f"{ext_rec}{ext_cs:02X}")
+            
+            low_address = current_address & 0xFFFF
+            record_type = 0x00  # Data Record
+            
+            # हेक्स लाइन का ढांचा बनाना
+            line_str = f"{byte_count:02X}{low_address:04X}{record_type:02X}"
+            line_str += "".join(f"{b:02X}" for b in chunk)
+            
+            # Checksum कैलकुलेट करना
+            checksum = byte_count + ((low_address >> 8) & 0xFF) + (low_address & 0xFF) + record_type
+            checksum += sum(chunk)
+            checksum = (-checksum) & 0xFF
+            
+            hex_lines.append(f":{line_str}{checksum:02X}")
+            current_address += byte_count
+            
+        # End of File Record जोड़ना
+        hex_lines.append(":00000001FF")
+        hex_string = "\n".join(hex_lines) + "\n"
         
+        # --- SYM फ़ाइल जनरेशन ---
         sym_string = (
             f"// IconEdit Auto-Generated Symbol File\n"
             f"// Address Space: Flash Memory\n"
